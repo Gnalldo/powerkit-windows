@@ -170,14 +170,18 @@ Every drafted entry is validated before it is shown:
 
 ### Settings
 
-**Settings** stores the API key, endpoint and model. The key is encrypted with
-Windows DPAPI for your account and kept in `%LOCALAPPDATA%\PowerKit\ai-key.dat`, so
-it is never written to `settings.json` in readable form. Pressing **+ New** without
-a key offers to open Settings first, unless the endpoint is on this PC.
+The builder speaks the OpenAI `/chat/completions` format, so it works with a local
+model, a hosted API, or Claude Code running as a small local server. It ships with no
+endpoint, no model and no key: press **+ New** on a fresh copy and PowerKit offers to
+open **Settings**, where the **Start from** buttons fill in a starting point.
 
-The key field carries a **Get a z.ai API key** link that opens Z.ai's API key page
-in your browser. Creating the key costs nothing, but it is not a free plan - see the
-cost table below.
+Everything you enter stays on this PC, and none of it is in the repository:
+
+- `%LOCALAPPDATA%\PowerKit\settings.json` holds `ai_base` and `ai_model`;
+- the key is encrypted with Windows DPAPI for your account and kept in
+  `%LOCALAPPDATA%\PowerKit\ai-key.dat`, so it is never written to `settings.json` in
+  readable form, never exported, and leaves the machine only as the request header
+  sent to the endpoint you chose.
 
 **Test** sends one short prompt with whatever is in the dialog - key, endpoint and
 model - before you save. It reports the model that answered and how many
@@ -186,36 +190,53 @@ tell a wrong key from a wrong model id. A test stores nothing.
 
 If the model breaks one of the builder's rules - an invented group, a forbidden
 registry path, a missing value - PowerKit sends the rejection back and asks once more
-before it shows the error. That repair pass is what makes a small local model usable:
-`qwen2.5-coder:7b` drafted a valid card first time, `llama3.1:8b` got there on the
-second try.
+before it shows the error. That repair pass is what makes a small local model usable: a 7B coding model
+drafted a valid card first time, an 8B general model got there on the second try.
 
-Any OpenAI-compatible `/chat/completions` endpoint works. Three ways to keep the
-cost at zero:
+Any OpenAI-compatible `/chat/completions` endpoint works. The **Start from** buttons
+are only shortcuts; the fields stay editable, so anything not listed works too.
 
-| Endpoint | Model | Key |
-| --- | --- | --- |
-| `https://api.z.ai/api/paas/v4` (default) | `glm-4.7-flash` or `glm-4.5-flash` - the only Z.ai ids priced at $0 per token | a Z.ai key, free to create |
-| `http://localhost:11434/v1` (Ollama) | whatever you have pulled, for example `qwen3:8b` | none; a local server ignores it |
-| `https://generativelanguage.googleapis.com/v1beta/openai` (Gemini) or `https://api.groq.com/openai/v1` (Groq) | a free-tier model | that provider's key |
+| Start from | Endpoint | Model | Key |
+| --- | --- | --- | --- |
+| Claude Code | `http://<wrapper-host>:8080/v1` | `claude-sonnet-4-6` | the wrapper's bearer token, if it has one |
+| Ollama | `http://localhost:11434/v1` | whatever you have pulled | none |
+| Z.ai | `https://api.z.ai/api/paas/v4` | `glm-4.7-flash` | a Z.ai key; only the Flash ids are $0 per token |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | an OpenAI key, billed per token |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` | an AI Studio key |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | a Groq key, free tier |
+| Custom | any OpenAI-compatible endpoint | your model id | depends |
 
-An Ollama box on your own network is used the same way: put `http://<address>:11434/v1`
-in Endpoint and the pulled tag in Model, with the key box left empty. PowerKit treats
-loopback, private addresses and single-label hostnames as keyless, so it never asks for
-a key there; a public domain still needs one. The machine here points at
-`http://192.168.50.243:11434/v1` with `qwen2.5-coder:7b`, which drafts a card in a
-couple of seconds once the model is loaded. A box that only answers on its own
-loopback needs Ollama listening on the network (`OLLAMA_HOST=0.0.0.0`).
+A model on your own network is used the same way: put `http://<address>:11434/v1` in
+Endpoint and the pulled tag in Model, with the key box left empty. PowerKit treats
+loopback, `10.x`, `172.16-31.x`, `192.168.x`, `169.254.x` and single-label hostnames as
+keyless, so it never asks for a key there; a public domain still needs one. A box that
+only answers on its own loopback needs Ollama listening on the network
+(`OLLAMA_HOST=0.0.0.0`).
 
-Paying nothing means staying on one of those ids. On Z.ai's price list only
-`glm-4.7-flash`, `glm-4.5-flash` and the vision model `glm-4.6v-flash` are free in
-all four columns; every other model, including `glm-5.3-flash` (around $0.15 in /
-$0.50 out per million tokens), bills per token. On the paid rows the only free column
-is *Cached Input Storage*, marked limited-time free - that is storage of prompts you
-reuse, not free usage, and it will read as a charge if you mistake it for the price.
-Z.ai does not publish the rate limit that applies to its free models, and it has
-moved models in and out of the free list before, so check
-<https://docs.z.ai/guides/overview/pricing> before you rely on it.
+On Z.ai's price list only `glm-4.7-flash`, `glm-4.5-flash` and the vision model
+`glm-4.6v-flash` are free in all four columns; every other model bills per token. The
+free list has changed before, so check <https://docs.z.ai/guides/overview/pricing>
+before you rely on it.
+
+#### Using Claude Code as the endpoint
+
+If Claude Code is already signed in on a machine you own, a small wrapper can serve it
+as an OpenAI-compatible endpoint, so drafting runs against the Claude plan you already
+pay for instead of a per-token API key:
+
+1. On that machine, check `claude -p "say ready"` answers without a browser prompt.
+2. Run a wrapper that exposes `/v1/chat/completions` over it - for example `claude-p`
+   (Docker), `claude-code-relay` (`npx`), or `cli2api` (`pip`) - and bind it to your
+   network rather than to loopback only.
+3. If the wrapper takes a bearer token, set one. Then in PowerKit set Endpoint to
+   `http://<that-machine>:<port>/v1`, Model to an id the wrapper lists, and paste the
+   token into the key box.
+
+PowerKit itself needs nothing installed for this: it is only an HTTP client, so the
+wrapper is the single extra piece and it belongs on the machine that is already signed
+in to Claude Code. Wrappers are third-party projects; they route your subscription
+through the CLI, so keep them on your own network and read their terms before pointing
+them at anything but yourself.
 
 ## Backup and sharing
 

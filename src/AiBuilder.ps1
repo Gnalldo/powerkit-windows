@@ -1,9 +1,50 @@
 # AiBuilder.ps1 - the "New action" builder: API key storage, AI drafting, validation
 # and the custom catalog that user-generated cards live in.
 
-$script:AiDefaultBase = 'https://api.z.ai/api/paas/v4'
-# One of Z.ai's genuinely free models ($0 in, $0 out); see README for alternatives.
-$script:AiDefaultModel = 'glm-4.7-flash'
+# Nothing machine-specific is built in: a fresh copy has no endpoint and no model, so
+# the first run asks for one instead of quietly pointing at somebody else's provider.
+$script:AiDefaultBase = ''
+$script:AiDefaultModel = ''
+
+# Starting points for the Settings dialog. Base and Model only fill the boxes in,
+# every field stays editable, and a preset without a Url needs no key at all.
+$script:AiPresets = @(
+    @{ Name = 'Claude Code'
+       Base = 'http://localhost:8080/v1'
+       Model = 'claude-sonnet-4-6'
+       Url = ''
+       Note = 'Needs a wrapper that serves Claude Code as an OpenAI-compatible endpoint, on this PC or another one. Put its address here and its bearer token in the key box.' }
+    @{ Name = 'Ollama'
+       Base = 'http://localhost:11434/v1'
+       Model = 'qwen2.5-coder:7b'
+       Url = ''
+       Note = 'Runs on this PC and needs no key. For another machine use its address instead of localhost, and let Ollama listen on the network.' }
+    @{ Name = 'Z.ai'
+       Base = 'https://api.z.ai/api/paas/v4'
+       Model = 'glm-4.7-flash'
+       Url = 'https://z.ai/manage-apikey/apikey-list'
+       Note = 'glm-4.7-flash and glm-4.5-flash are the ids Z.ai prices at $0 per token; the others bill per token.' }
+    @{ Name = 'OpenAI'
+       Base = 'https://api.openai.com/v1'
+       Model = 'gpt-4o-mini'
+       Url = 'https://platform.openai.com/api-keys'
+       Note = 'Billed per token against your OpenAI account.' }
+    @{ Name = 'Gemini'
+       Base = 'https://generativelanguage.googleapis.com/v1beta/openai'
+       Model = 'gemini-2.5-flash'
+       Url = 'https://aistudio.google.com/apikey'
+       Note = 'Gemini through its OpenAI-compatible endpoint; keys come from AI Studio.' }
+    @{ Name = 'Groq'
+       Base = 'https://api.groq.com/openai/v1'
+       Model = 'llama-3.3-70b-versatile'
+       Url = 'https://console.groq.com/keys'
+       Note = 'Fast free tier with rate limits.' }
+    @{ Name = 'Custom'
+       Base = ''
+       Model = ''
+       Url = ''
+       Note = 'Any endpoint that speaks OpenAI /chat/completions: LM Studio, vLLM, a gateway, or a proxy on another PC.' }
+)
 $script:AiKeyPath = Join-Path $script:AppDataDir 'ai-key.dat'
 $script:CustomCatalogPath = Join-Path $script:AppDataDir 'custom.json'
 $script:AiPending = $null
@@ -85,6 +126,7 @@ function Save-AiApiKey {
 }
 
 function Test-AiConfigured {
+    if ([string]::IsNullOrWhiteSpace((Get-AiBaseUrl))) { return $false }
     if (-not [string]::IsNullOrWhiteSpace((Get-AiApiKey))) { return $true }
     # A server running on this PC (Ollama, LM Studio) needs no key at all.
     return (Test-AiLocalEndpoint)
@@ -465,15 +507,25 @@ $uri = $BaseUrl.TrimEnd('/') + '/chat/completions'
 try {
     $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers `
         -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
-        -ContentType 'application/json; charset=utf-8' -TimeoutSec 60 -ErrorAction Stop
+        -ContentType 'application/json; charset=utf-8' -TimeoutSec 120 -ErrorAction Stop
 } catch {
     $detail = $_.Exception.Message
+    # The provider's own wording is what tells a wrong key from a wrong model, and it
+    # arrives in the response body; Invoke-RestMethod parks it in ErrorDetails.
     try {
-        if ($_.Exception.Response) {
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $detail = [string]$_.ErrorDetails.Message
+        } elseif ($_.Exception.Response) {
             $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
             $detail = $reader.ReadToEnd()
             $reader.Dispose()
         }
+    } catch { }
+    # Most endpoints answer with {"error":{"message":"..."}}; show just that sentence.
+    try {
+        $parsed = $detail | ConvertFrom-Json
+        if ($parsed.error.message) { $detail = [string]$parsed.error.message }
+        elseif ($parsed.error) { $detail = [string]$parsed.error }
     } catch { }
     throw $detail
 }
@@ -508,15 +560,22 @@ $watch = [System.Diagnostics.Stopwatch]::StartNew()
 try {
     $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers `
         -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
-        -ContentType 'application/json; charset=utf-8' -TimeoutSec 30 -ErrorAction Stop
+        -ContentType 'application/json; charset=utf-8' -TimeoutSec 60 -ErrorAction Stop
 } catch {
     $detail = $_.Exception.Message
     try {
-        if ($_.Exception.Response) {
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $detail = [string]$_.ErrorDetails.Message
+        } elseif ($_.Exception.Response) {
             $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
             $detail = $reader.ReadToEnd()
             $reader.Dispose()
         }
+    } catch { }
+    try {
+        $parsed = $detail | ConvertFrom-Json
+        if ($parsed.error.message) { $detail = [string]$parsed.error.message }
+        elseif ($parsed.error) { $detail = [string]$parsed.error }
     } catch { }
     $watch.Stop()
     return @{ ok = $false; error = $detail; ms = [int]$watch.ElapsedMilliseconds }
@@ -803,10 +862,20 @@ function New-SettingsDialog {
     $title = New-TextBlock -Text 'Settings' -Size 16 -Weight 'SemiBold' -Font $script:FontDisplay
     [void]$stack.Children.Add($title)
 
-    $hint = New-TextBlock -Text 'PowerKit sends your description to this endpoint and turns the reply into a card. Nothing is sent until you press Generate, and the key never leaves this PC unencrypted. A local endpoint such as Ollama (http://localhost:11434/v1) needs no key.' -Size 12 -ColorKey 'TextSecondary' -Wrap 'Wrap'
+    $hint = New-TextBlock -Text 'PowerKit sends your description to the endpoint below and turns the reply into a card. Nothing is sent until you press Generate. This setup stays on this PC: the endpoint and model live in settings.json and the key is encrypted for your Windows account, so none of it is part of the published code.' -Size 12 -ColorKey 'TextSecondary' -Wrap 'Wrap'
     $hint.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
     $hint.MaxWidth = 460
     [void]$stack.Children.Add($hint)
+
+    # A preset only fills the boxes in; it never saves or sends anything by itself.
+    [void]$stack.Children.Add((New-FieldLabel -Text 'Start from' -Top 16))
+    $presetWrap = New-Object System.Windows.Controls.WrapPanel
+    [void]$stack.Children.Add($presetWrap)
+
+    $presetNote = New-TextBlock -Text 'Pick a provider to fill in a starting endpoint and model, then press Test.' -Size 10.5 -ColorKey 'TextTertiary' -Wrap 'Wrap'
+    $presetNote.MaxWidth = 460
+    $presetNote.Margin = New-Object System.Windows.Thickness(0, 2, 0, 0)
+    [void]$stack.Children.Add($presetNote)
 
     [void]$stack.Children.Add((New-FieldLabel -Text 'API key' -Top 16))
     # A TextBox cannot mask its text, so the key field is a PasswordBox in a styled border.
@@ -831,15 +900,18 @@ function New-SettingsDialog {
     $keyNote.Margin = New-Object System.Windows.Thickness(0, 4, 0, 0)
     [void]$stack.Children.Add($keyNote)
 
-    # Straight to the key page: a key is free to create, but only the Flash ids are $0 per token.
+    # The key page follows whichever provider is picked, so no provider is hard-wired in.
     $keyLink = New-Object System.Windows.Controls.Button
     $keyLink.Style = Get-Resource 'BtnGhost'
-    $keyLink.Content = 'Get a z.ai API key'
+    $keyLink.Content = 'Where do I get a key?'
     $keyLink.HorizontalAlignment = 'Left'
     $keyLink.Margin = New-Object System.Windows.Thickness(-6, 4, 0, 0)
-    $keyLink.ToolTip = 'Opens z.ai in your browser. Creating the key costs nothing, but the key is not a free plan: only glm-4.7-flash, glm-4.5-flash and glm-4.6v-flash are $0 per token. Every other model bills per token.'
+    $keyLink.Visibility = 'Collapsed'
     $keyLink.Add_Click({
-        try { Start-Process 'https://z.ai/manage-apikey/apikey-list' } catch { Show-Toast -Message ('Could not open the browser: ' + $_.Exception.Message) -Kind 'error' }
+        param($sender, $eventArgs)
+        $url = [string]$sender.Tag
+        if (-not $url) { return }
+        try { Start-Process $url } catch { Show-Toast -Message ('Could not open the browser: ' + $_.Exception.Message) -Kind 'error' }
     })
     [void]$stack.Children.Add($keyLink)
 
@@ -854,6 +926,46 @@ function New-SettingsDialog {
     $modelBox.Style = Get-Resource 'InputTextBox'
     $modelBox.Text = Get-AiModel
     [void]$stack.Children.Add($modelBox)
+
+    foreach ($preset in $script:AiPresets) {
+        $chip = New-Object System.Windows.Controls.Button
+        $chip.Style = Get-Resource 'BtnSecondary'
+        $chip.Content = $preset.Name
+        $chip.Margin = New-Object System.Windows.Thickness(0, 0, 6, 6)
+        $chip.Tag = $preset
+        $chip.ToolTip = [string]$preset.Note
+        $chip.Add_Click({
+            param($sender, $eventArgs)
+            $picked = $sender.Tag
+            if ($picked.Base) { $baseBox.Text = [string]$picked.Base }
+            if ($picked.Model) { $modelBox.Text = [string]$picked.Model }
+            $presetNote.Text = [string]$picked.Note
+            if ($picked.Url) {
+                $keyLink.Tag = [string]$picked.Url
+                $keyLink.Content = 'Get a ' + $picked.Name + ' key'
+                $keyLink.Visibility = 'Visible'
+            } else {
+                $keyLink.Tag = ''
+                $keyLink.Visibility = 'Collapsed'
+            }
+        })
+        [void]$presetWrap.Children.Add($chip)
+    }
+
+    # Open on whatever is already saved, so the dialog shows the provider in use.
+    $savedBase = (Get-AiBaseUrl).TrimEnd('/')
+    if ($savedBase) {
+        foreach ($chip in $presetWrap.Children) {
+            if (([string]$chip.Tag.Base).TrimEnd('/') -ne $savedBase) { continue }
+            $presetNote.Text = [string]$chip.Tag.Note
+            if ($chip.Tag.Url) {
+                $keyLink.Tag = [string]$chip.Tag.Url
+                $keyLink.Content = 'Get a ' + $chip.Tag.Name + ' key'
+                $keyLink.Visibility = 'Visible'
+            }
+            break
+        }
+    }
 
     $testStatus = New-TextBlock -Text 'Press Test to send one short prompt with the values above. A test stores nothing.' -Size 11 -ColorKey 'TextTertiary' -Wrap 'Wrap'
     $testStatus.MaxWidth = 460
@@ -1009,7 +1121,7 @@ function Show-SettingsDialog {
 
 function Show-NewActionDialog {
     if (-not (Test-AiConfigured)) {
-        $answer = Show-Dialog -Title 'An API key is needed' -Message "The AI builder sends your description to a model endpoint and turns the reply into a card. Add an API key in Settings first - it is stored encrypted for your Windows account." -Primary 'Open settings' -Secondary 'Cancel'
+        $answer = Show-Dialog -Title 'Connect a model first' -Message "The AI builder sends your description to a model endpoint and turns the reply into a card, so it needs one connection before it can draft anything. Settings has a starting point for Claude Code, a local Ollama and a few hosted APIs: pick one, press Test, then Save." -Primary 'Open settings' -Secondary 'Cancel'
         if ($answer -eq 'primary') { Show-SettingsDialog }
         if (-not (Test-AiConfigured)) { return }
     }
@@ -1056,7 +1168,7 @@ function Show-NewActionDialog {
     $generate.HorizontalAlignment = 'Left'
     [void]$statusRow.Children.Add($generate)
 
-    $status = New-TextBlock -Text ('Uses ' + (Get-AiModel)) -Size 11 -ColorKey 'TextTertiary' -Wrap 'Wrap'
+    $status = New-TextBlock -Text $(if (Get-AiModel) { 'Uses ' + (Get-AiModel) } else { 'No model set' }) -Size 11 -ColorKey 'TextTertiary' -Wrap 'Wrap'
     $status.VerticalAlignment = 'Center'
     $status.Margin = New-Object System.Windows.Thickness(10, 0, 0, 0)
     [System.Windows.Controls.Grid]::SetColumn($status, 1)
