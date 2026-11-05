@@ -1,0 +1,7 @@
+# Freebuff app metadata (project marker, imported chat attachment)
+.freebuff/
+.cloud-attachments/
+
+# Local scratch harnesses and logs
+_*.ps1
+*.log
