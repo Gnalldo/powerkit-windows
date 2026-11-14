@@ -9,6 +9,12 @@ $script:AiDefaultModel = ''
 # Starting points for the Settings dialog. Base and Model only fill the boxes in,
 # every field stays editable, and a preset without a Url needs no key at all.
 $script:AiPresets = @(
+    @{ Name = 'Freebuff'
+       Base = 'https://freebuff.com/api/v1/paid'
+       Model = 'deepseek/deepseek-v4.1-flash'
+       Url = 'https://freebuff.com/account/api'
+       Note = 'Runs on Freebuff with an API key from your account, so nothing has to be installed and no local model is needed. Requests bill against your Freebuff plan.'
+       Recommend = $true }
     @{ Name = 'Claude Code'
        Base = 'http://localhost:8080/v1'
        Model = 'claude-sonnet-4-6'
@@ -855,6 +861,8 @@ function New-FieldLabel {
 }
 
 function New-SettingsDialog {
+    param([string]$Preset = '')
+
     $dialog = New-OverlayDialog -Width 520
     $window = $dialog.Window
     $stack = $dialog.Stack
@@ -862,7 +870,7 @@ function New-SettingsDialog {
     $title = New-TextBlock -Text 'Settings' -Size 16 -Weight 'SemiBold' -Font $script:FontDisplay
     [void]$stack.Children.Add($title)
 
-    $hint = New-TextBlock -Text 'PowerKit sends your description to the endpoint below and turns the reply into a card. Nothing is sent until you press Generate. This setup stays on this PC: the endpoint and model live in settings.json and the key is encrypted for your Windows account, so none of it is part of the published code.' -Size 12 -ColorKey 'TextSecondary' -Wrap 'Wrap'
+    $hint = New-TextBlock -Text 'PowerKit sends your description to the endpoint below and turns the reply into a card. Nothing is sent until you press Generate. Freebuff is the quickest route and needs only a key; your own model or API works just as well. This setup stays on this PC: the endpoint and model live in settings.json and the key is encrypted for your Windows account, so none of it is part of the published code.' -Size 12 -ColorKey 'TextSecondary' -Wrap 'Wrap'
     $hint.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
     $hint.MaxWidth = 460
     [void]$stack.Children.Add($hint)
@@ -872,7 +880,7 @@ function New-SettingsDialog {
     $presetWrap = New-Object System.Windows.Controls.WrapPanel
     [void]$stack.Children.Add($presetWrap)
 
-    $presetNote = New-TextBlock -Text 'Pick a provider to fill in a starting endpoint and model, then press Test.' -Size 10.5 -ColorKey 'TextTertiary' -Wrap 'Wrap'
+    $presetNote = New-TextBlock -Text 'Freebuff is the recommended route: press it, paste a key, then Test. Any other provider here uses your own model instead.' -Size 10.5 -ColorKey 'TextTertiary' -Wrap 'Wrap'
     $presetNote.MaxWidth = 460
     $presetNote.Margin = New-Object System.Windows.Thickness(0, 2, 0, 0)
     [void]$stack.Children.Add($presetNote)
@@ -927,13 +935,15 @@ function New-SettingsDialog {
     $modelBox.Text = Get-AiModel
     [void]$stack.Children.Add($modelBox)
 
-    foreach ($preset in $script:AiPresets) {
+    # $option, never $preset: PowerShell ignores case, so a $preset loop variable here
+    # would overwrite the -Preset parameter that decides which provider opens first.
+    foreach ($option in $script:AiPresets) {
         $chip = New-Object System.Windows.Controls.Button
         $chip.Style = Get-Resource 'BtnSecondary'
-        $chip.Content = $preset.Name
+        $chip.Content = $(if ($option.ContainsKey('Recommend') -and $option.Recommend) { $option.Name + ' (recommended)' } else { $option.Name })
         $chip.Margin = New-Object System.Windows.Thickness(0, 0, 6, 6)
-        $chip.Tag = $preset
-        $chip.ToolTip = [string]$preset.Note
+        $chip.Tag = $option
+        $chip.ToolTip = [string]$option.Note
         $chip.Add_Click({
             param($sender, $eventArgs)
             $picked = $sender.Tag
@@ -952,18 +962,43 @@ function New-SettingsDialog {
         [void]$presetWrap.Children.Add($chip)
     }
 
-    # Open on whatever is already saved, so the dialog shows the provider in use.
-    $savedBase = (Get-AiBaseUrl).TrimEnd('/')
-    if ($savedBase) {
+    # Open on the provider that was asked for, else the one already saved, else the
+    # recommended one, so a first run opens with Freebuff filled in and only the key
+    # box left to fill.
+    if ($Preset -eq 'none') {
+        $presetNote.Text = 'Pick a starting point below, or type the endpoint and model you already use. A model on this PC needs no key.'
+    } else {
+        $savedBase = (Get-AiBaseUrl).TrimEnd('/')
+        $wanted = $Preset
+        if (-not $wanted) { $wanted = $savedBase }
+        $matched = $false
         foreach ($chip in $presetWrap.Children) {
-            if (([string]$chip.Tag.Base).TrimEnd('/') -ne $savedBase) { continue }
+            $presetBase = ([string]$chip.Tag.Base).TrimEnd('/')
+            $isPick = $false
+            if ($wanted) {
+                if ($presetBase -and $presetBase -eq ([string]$wanted).TrimEnd('/')) { $isPick = $true }
+                elseif ([string]$chip.Tag.Name -eq [string]$wanted) { $isPick = $true }
+            } elseif ($chip.Tag.ContainsKey('Recommend') -and $chip.Tag.Recommend) {
+                $isPick = $true
+            }
+            if (-not $isPick) { continue }
+
+            # Never overwrite something already typed or saved.
+            if (-not $baseBox.Text.Trim() -and $chip.Tag.Base) { $baseBox.Text = [string]$chip.Tag.Base }
+            if (-not $modelBox.Text.Trim() -and $chip.Tag.Model) { $modelBox.Text = [string]$chip.Tag.Model }
             $presetNote.Text = [string]$chip.Tag.Note
             if ($chip.Tag.Url) {
                 $keyLink.Tag = [string]$chip.Tag.Url
                 $keyLink.Content = 'Get a ' + $chip.Tag.Name + ' key'
                 $keyLink.Visibility = 'Visible'
             }
+            $matched = $true
             break
+        }
+        # A saved endpoint that is not one of the presets - another machine, a proxy -
+        # keeps its note honest instead of advertising a provider it is not using.
+        if (-not $matched -and $wanted) {
+            $presetNote.Text = 'Using the endpoint saved below. Press a provider above to replace it, or edit the boxes directly.'
         }
     }
 
@@ -1111,7 +1146,9 @@ function New-SettingsDialog {
 }
 
 function Show-SettingsDialog {
-    $dialog = New-SettingsDialog
+    param([string]$Preset = '')
+
+    $dialog = New-SettingsDialog -Preset $Preset
     $window = $dialog.Window
     $window.Tag = 'cancel'
     [void]$window.ShowDialog()
@@ -1121,8 +1158,12 @@ function Show-SettingsDialog {
 
 function Show-NewActionDialog {
     if (-not (Test-AiConfigured)) {
-        $answer = Show-Dialog -Title 'Connect a model first' -Message "The AI builder sends your description to a model endpoint and turns the reply into a card, so it needs one connection before it can draft anything. Settings has a starting point for Claude Code, a local Ollama and a few hosted APIs: pick one, press Test, then Save." -Primary 'Open settings' -Secondary 'Cancel'
-        if ($answer -eq 'primary') { Show-SettingsDialog }
+        # Two routes, and the least work one is offered first: a Freebuff key needs no
+        # install and no local model.
+        $message = 'PowerKit turns your description into a card with a model, so it needs one connection first.' + "`n`n" + 'The easiest route is Freebuff (recommended): create a key at freebuff.com/account/api, paste it into Settings, press Test, then Save. Nothing is installed and no model runs on this PC.' + "`n`n" + 'If you already have a model or a key, pick My own model instead: a local Ollama or LM Studio needs none, and OpenAI, Gemini, Groq and Z.ai take a key.'
+        $answer = Show-Dialog -Title 'Connect a model' -Message $message -Primary 'Use Freebuff' -Secondary 'My own model'
+        if ($answer -eq 'primary') { Show-SettingsDialog -Preset 'Freebuff' }
+        elseif ($answer -eq 'secondary') { Show-SettingsDialog -Preset 'none' }
         if (-not (Test-AiConfigured)) { return }
     }
 

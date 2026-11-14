@@ -20,11 +20,13 @@ function Write-RunLog {
 }
 
 function Invoke-StartProcess {
-    param([string]$FilePath, [string[]]$ArgumentList)
+    param([string]$FilePath, [string[]]$ArgumentList, [string]$Verb = '')
 
     Write-RunLog -FilePath $FilePath -ArgumentList $ArgumentList
     $args = @{ FilePath = $FilePath }
     if ($ArgumentList) { $args['ArgumentList'] = $ArgumentList }
+    # RunAs is the only verb in use; a UAC prompt is what makes the admin route work.
+    if ($Verb) { $args['Verb'] = $Verb }
     Start-Process @args | Out-Null
 }
 
@@ -44,6 +46,132 @@ function Invoke-CmdHidden {
         $ErrorActionPreference = $previous
     }
     return @{ ExitCode = $code; Output = (($lines -join "`n").Trim()) }
+}
+
+function Get-ScriptEditor {
+    # VS Code is optional, so the tile only offers it when it is really installed.
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\Code.exe')
+        (Join-Path $env:ProgramFiles 'Microsoft VS Code\Code.exe')
+    )
+    if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Microsoft VS Code\Code.exe') }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    $command = Get-Command 'code.cmd' -ErrorAction SilentlyContinue
+    if ($null -ne $command) { return $command.Source }
+    return ''
+}
+
+function Show-ScriptActionDialog {
+    param([string]$Path, [string]$Editor = '')
+
+    $dialog = New-OverlayDialog -Width 470
+    $window = $dialog.Window
+    $stack = $dialog.Stack
+
+    $title = New-TextBlock -Text 'Run this script?' -Size 16 -Weight 'SemiBold' -Font $script:FontDisplay
+    [void]$stack.Children.Add($title)
+
+    $hint = New-TextBlock -Text 'Run starts the file in PowerShell with your permissions, so the script can change anything you can change. Read it first unless you wrote it.' -Size 12 -ColorKey 'TextSecondary' -Wrap 'Wrap'
+    $hint.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+    $hint.MaxWidth = 410
+    [void]$stack.Children.Add($hint)
+
+    $name = New-TextBlock -Text ([System.IO.Path]::GetFileName($Path)) -Size 12.5 -Weight 'SemiBold' -Wrap 'Wrap'
+    $name.Margin = New-Object System.Windows.Thickness(0, 12, 0, 0)
+    $name.MaxWidth = 410
+    [void]$stack.Children.Add($name)
+
+    $full = New-TextBlock -Text $Path -Size 10.5 -ColorKey 'TextTertiary' -Wrap 'Wrap'
+    $full.Margin = New-Object System.Windows.Thickness(0, 2, 0, 0)
+    $full.MaxWidth = 410
+    [void]$stack.Children.Add($full)
+
+    $script:ScriptAction = ''
+
+    $actions = @(
+        @{ Label = 'Run'; Choice = 'run' }
+        @{ Label = 'Run as administrator'; Choice = 'admin' }
+    )
+    if ($Editor) { $actions += @{ Label = 'Open in VS Code'; Choice = 'code' } }
+    $actions += @{ Label = 'Open in Notepad'; Choice = 'notepad' }
+
+    foreach ($action in $actions) {
+        $button = New-Object System.Windows.Controls.Button
+        $button.Style = Get-Resource 'BtnSecondary'
+        $button.Content = $action.Label
+        $button.HorizontalAlignment = 'Left'
+        $button.MinWidth = 210
+        $button.Margin = New-Object System.Windows.Thickness(0, 10, 0, 0)
+        $button.Tag = $action.Choice
+        $button.Add_Click({
+            param($sender, $eventArgs)
+            $script:ScriptAction = [string]$sender.Tag
+            $window = [System.Windows.Window]::GetWindow($sender)
+            if ($window) { $window.Close() }
+        })
+        [void]$stack.Children.Add($button)
+    }
+
+    $cancel = New-Object System.Windows.Controls.Button
+    $cancel.Style = Get-Resource 'BtnGhost'
+    $cancel.Content = 'Cancel'
+    $cancel.HorizontalAlignment = 'Right'
+    $cancel.Margin = New-Object System.Windows.Thickness(0, 14, 0, 0)
+    $cancel.Add_Click({
+        param($sender, $eventArgs)
+        $script:ScriptAction = ''
+        $window = [System.Windows.Window]::GetWindow($sender)
+        if ($window) { $window.Close() }
+    })
+    [void]$stack.Children.Add($cancel)
+
+    [void]$window.ShowDialog()
+    return [string]$script:ScriptAction
+}
+
+function Invoke-ScriptTile {
+    $editor = Get-ScriptEditor
+
+    $dialog = New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Title = 'Choose a PowerShell script'
+    $dialog.Filter = 'PowerShell scripts (*.ps1)|*.ps1|All files (*.*)|*.*'
+    $dialog.CheckFileExists = $true
+    $documents = [Environment]::GetFolderPath('MyDocuments')
+    if ($documents) { $dialog.InitialDirectory = $documents }
+    $picked = if ($null -ne $script:Window) { $dialog.ShowDialog($script:Window) } else { $dialog.ShowDialog() }
+    if ($picked -ne $true) { return '' }
+
+    $path = $dialog.FileName
+    $choice = Show-ScriptActionDialog -Path $path -Editor $editor
+    if (-not $choice) { return '' }
+
+    switch ($choice) {
+        'run' {
+            Invoke-StartProcess -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $path
+            return ('Running ' + [System.IO.Path]::GetFileName($path))
+        }
+        'admin' {
+            try {
+                Invoke-StartProcess -FilePath 'powershell.exe' -Verb 'RunAs' -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $path
+            } catch {
+                # Declining the UAC prompt is a normal answer, not a failure.
+                return 'Administrator prompt cancelled'
+            }
+            return ('Running ' + [System.IO.Path]::GetFileName($path) + ' as administrator')
+        }
+        'code' {
+            Invoke-StartProcess -FilePath $editor -ArgumentList $path
+            return ('Opened ' + [System.IO.Path]::GetFileName($path) + ' in VS Code')
+        }
+        'notepad' {
+            Invoke-StartProcess -FilePath 'notepad.exe' -ArgumentList $path
+            return ('Opened ' + [System.IO.Path]::GetFileName($path) + ' in Notepad')
+        }
+    }
+    return ''
 }
 
 function Get-HandlerAction {
@@ -172,6 +300,7 @@ function Get-HandlerAction {
             $mb = [Math]::Round($freed / 1MB, 1)
             return ("Temporary files cleared - {0} MB freed{1}" -f $mb, $(if ($failed -gt 0) { ", $failed item(s) in use" } else { '' }))
         }
+        'RunScript' { return (Invoke-ScriptTile) }
         default { throw "Unknown command handler: $Handler" }
     }
 }

@@ -566,4 +566,10 @@ $script:CommandDefs = @(
         Warning = 'Locked files are skipped. Close installers and editors first so nothing is recreated mid-cleanup.'
         Confirm = 'Delete everything inside your temp folder? Files in use will be skipped.'; ConfirmLabel = 'Clear temp'
     }
+    @{
+        Id = 'tool-script'; Group = 'tools'; Title = 'Run a PowerShell script'
+        Desc = 'Pick a .ps1 file, then run it, run it as administrator, or open it in VS Code or Notepad instead of guessing what a double-click will do.'
+        Risk = 'caution'; Handler = 'RunScript'
+        Warning = 'A script runs with your permissions and can change anything you can change. Read it first unless you wrote it.'
+    }
 )

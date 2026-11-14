@@ -502,7 +502,8 @@ function Invoke-CommandFromUi {
         } finally {
             $script:LogCommandId = ''
         }
-        Show-Toast -Message $message -Kind 'success'
+                    # A handler that only showed a picker can come back empty: no toast for that.
+            if ($message) { Show-Toast -Message $message -Kind 'success' }
     } catch {
         Show-Toast -Message $_.Exception.Message -Kind 'error'
     }

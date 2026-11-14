@@ -78,7 +78,7 @@ with the option to restart the whole app elevated instead.
 | Privacy and Ads | advertising ID, activity history, tips and suggestions, telemetry, location |
 | System and Updates | long paths, Developer Mode, verbose boot, update auto-restart, lock screen |
 | Power and Session | restart, shut down, sleep, hibernate, lock, UEFI restart, power plans |
-| Quick Tools | Task Manager, Services, Device Manager, God Mode folder, DNS flush, temp cleanup |
+| Quick Tools | Task Manager, Services, Device Manager, God Mode folder, DNS flush, temp cleanup, run a PowerShell script |
 
 Every card explains what the setting does, and anything with a real downside carries
 an inline warning plus a CAUTION or ADVANCED badge.
@@ -172,8 +172,17 @@ Every drafted entry is validated before it is shown:
 
 The builder speaks the OpenAI `/chat/completions` format, so it works with a local
 model, a hosted API, or Claude Code running as a small local server. It ships with no
-endpoint, no model and no key: press **+ New** on a fresh copy and PowerKit offers to
-open **Settings**, where the **Start from** buttons fill in a starting point.
+endpoint, no model and no key.
+
+On a fresh copy, pressing **+ New** asks one question: **Use Freebuff** - recommended,
+because a key from <https://freebuff.com/account/api> is the whole setup and no model
+runs on your PC - or **My own model**, if you already have one. Either way it opens
+**Settings** on that route: Freebuff arrives with its endpoint and model already
+filled in, so only the key box is left, and the other route opens on the full list.
+
+A saved setup opens on the provider it already uses. The **Start from** buttons replace
+the endpoint and model with that provider's, nothing is saved until you press Save,
+and every field stays editable, so an endpoint that is not in the list still works.
 
 Everything you enter stays on this PC, and none of it is in the repository:
 
@@ -193,11 +202,18 @@ registry path, a missing value - PowerKit sends the rejection back and asks once
 before it shows the error. That repair pass is what makes a small local model usable: a 7B coding model
 drafted a valid card first time, an 8B general model got there on the second try.
 
+**Freebuff** is the shortest path to a working builder: create a key under
+Account -> Developer API at <https://freebuff.com/account/api>, press the Freebuff
+button in Settings, paste the key and press Test. Drafts then run on Freebuff's
+models against your own plan, with no local model, no GPU and no Claude login on
+any machine.
+
 Any OpenAI-compatible `/chat/completions` endpoint works. The **Start from** buttons
 are only shortcuts; the fields stay editable, so anything not listed works too.
 
 | Start from | Endpoint | Model | Key |
 | --- | --- | --- | --- |
+| Freebuff | `https://freebuff.com/api/v1/paid` | `deepseek/deepseek-v4.1-flash` | a Freebuff key from <https://freebuff.com/account/api> |
 | Claude Code | `http://<wrapper-host>:8080/v1` | `claude-sonnet-4-6` | the wrapper's bearer token, if it has one |
 | Ollama | `http://localhost:11434/v1` | whatever you have pulled | none |
 | Z.ai | `https://api.z.ai/api/paas/v4` | `glm-4.7-flash` | a Z.ai key; only the Flash ids are $0 per token |
@@ -262,7 +278,12 @@ through the history from the keyboard. PowerKit keeps its own last 12 entries in
 `%LOCALAPPDATA%\PowerKit\run-history.json` and also shows whatever Windows still
 has in its own Run history (`RunMRU`), so the list is useful on first launch too.
 
-Quick Tools also carries Command Prompt, PowerShell and Windows Terminal cards.
+Quick Tools also carries Command Prompt, PowerShell and Windows Terminal cards, and **Run a
+PowerShell script**: pick a `.ps1` file and choose **Run**, **Run as administrator**,
+**Open in VS Code** (when VS Code is installed) or **Open in Notepad**, instead of living
+with whatever a double-click on that file does. The run routes use
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File`, the administrator one adds a UAC
+prompt, and nothing is launched until you pick one of the buttons.
 
 ## Layout
 
